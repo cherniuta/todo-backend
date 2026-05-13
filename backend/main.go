@@ -16,13 +16,22 @@ func main() {
 	taskHandler := handlers.NewTaskHandler(store)
 	problemHandler := handlers.NewProblemHandler(store)
 	projectHandler := handlers.NewProjectHandler(store)
+	delayedHandler := handlers.NewDelayedHandler(store)
+	currentWaveHandler := handlers.NewCurrentWaveHandler(store)
+	modeHandler := handlers.NewModeHandler(store)
 
 	http.Handle("/api/tasks", taskHandler)
 	http.Handle("/api/tasks/", taskHandler)
 	http.Handle("/api/inbox", taskHandler)
 	http.Handle("/api/inbox/", taskHandler)
 	http.Handle("/api/problems", problemHandler)
+	http.Handle("/api/problems/", problemHandler)
 	http.Handle("/api/projects", projectHandler)
+	http.Handle("/api/projects/", projectHandler)
+	http.Handle("/api/delayed", delayedHandler)
+	http.Handle("/api/current-wave", currentWaveHandler)
+	http.Handle("/api/current-wave/", currentWaveHandler)
+	http.Handle("/api/mode", modeHandler)
 
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -34,6 +43,7 @@ func main() {
 	log.Printf("inbox API:      http://localhost%s/api/tasks", port)
 	log.Printf("tasks API:      http://localhost%s/api/problems", port)
 	log.Printf("projects API:   http://localhost%s/api/projects", port)
+	log.Printf("wave API:       http://localhost%s/api/current-wave", port)
 
 	if err := http.ListenAndServe(port, nil); err != nil {
 		log.Fatalf("server startup error: %v", err)

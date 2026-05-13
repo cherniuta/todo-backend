@@ -24,13 +24,29 @@ type ProjectHandler struct {
 	store *storage.Storage
 }
 
+type DelayedHandler struct {
+	store *storage.Storage
+}
+
+type CurrentWaveHandler struct {
+	store *storage.Storage
+}
+
+type ModeHandler struct {
+	store *storage.Storage
+}
+
 type normalizedPayload struct {
 	Text        string
 	Name        string
 	Description string
 	SourceText  string
+	Source      string
+	ProjectID   int
+	ProjectName string
 	Status      string
 	DelayUntil  *time.Time
+	Done        bool
 }
 
 func NewTaskHandler(store *storage.Storage) *TaskHandler {
@@ -43,6 +59,18 @@ func NewProblemHandler(store *storage.Storage) *ProblemHandler {
 
 func NewProjectHandler(store *storage.Storage) *ProjectHandler {
 	return &ProjectHandler{store: store}
+}
+
+func NewDelayedHandler(store *storage.Storage) *DelayedHandler {
+	return &DelayedHandler{store: store}
+}
+
+func NewCurrentWaveHandler(store *storage.Storage) *CurrentWaveHandler {
+	return &CurrentWaveHandler{store: store}
+}
+
+func NewModeHandler(store *storage.Storage) *ModeHandler {
+	return &ModeHandler{store: store}
 }
 
 func (h *TaskHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -115,6 +143,7 @@ func (h *TaskHandler) getInboxItems(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeJSON(w, http.StatusOK, models.ProblemListResponse{
+			Problems:    tasks,
 			Tasks:       tasks,
 			TaskObjects: tasks,
 		})
@@ -255,14 +284,30 @@ func (h *ProblemHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodPost:
-		h.addProblem(w, r)
-	case http.MethodGet:
-		h.getProblems(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+	path := strings.TrimPrefix(r.URL.Path, "/api/problems")
+	if path == "" || path == "/" {
+		switch r.Method {
+		case http.MethodPost:
+			h.addProblem(w, r)
+		case http.MethodGet:
+			h.getProblems(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		}
+		return
 	}
+
+	if r.Method != http.MethodDelete {
+		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		return
+	}
+
+	id, err := idFromPath(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid problem id")
+		return
+	}
+	h.deleteProblem(w, id)
 }
 
 func (h *ProblemHandler) addProblem(w http.ResponseWriter, r *http.Request) {
@@ -272,7 +317,7 @@ func (h *ProblemHandler) addProblem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	text := strings.TrimSpace(req.Text)
+	text := strings.TrimSpace(firstNonEmpty(req.Text, req.Description))
 	if text == "" {
 		writeError(w, http.StatusBadRequest, "task text is required")
 		return
@@ -298,8 +343,29 @@ func (h *ProblemHandler) getProblems(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, models.ProblemListResponse{
+		Problems:    tasks,
 		Tasks:       tasks,
 		TaskObjects: tasks,
+	})
+}
+
+func (h *ProblemHandler) deleteProblem(w http.ResponseWriter, id int) {
+	task, ok, err := h.store.DeleteProblem(id)
+	if err != nil {
+		log.Printf("failed to delete problem: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"problem": task,
 	})
 }
 
@@ -311,14 +377,20 @@ func (h *ProjectHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	switch r.Method {
-	case http.MethodPost:
-		h.addProject(w, r)
-	case http.MethodGet:
-		h.getProjects(w, r)
-	default:
-		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+	path := strings.TrimPrefix(r.URL.Path, "/api/projects")
+	if path == "" || path == "/" {
+		switch r.Method {
+		case http.MethodPost:
+			h.addProject(w, r)
+		case http.MethodGet:
+			h.getProjects(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		}
+		return
 	}
+
+	h.handleProjectItem(w, r, path)
 }
 
 func (h *ProjectHandler) addProject(w http.ResponseWriter, r *http.Request) {
@@ -352,14 +424,369 @@ func (h *ProjectHandler) getProjects(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, models.ProjectListResponse{Projects: projects})
 }
 
+func (h *ProjectHandler) handleProjectItem(w http.ResponseWriter, r *http.Request, path string) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "not found")
+		return
+	}
+
+	projectID, err := strconv.Atoi(parts[0])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid project id")
+		return
+	}
+
+	if len(parts) == 1 {
+		switch r.Method {
+		case http.MethodPut:
+			h.updateProject(w, r, projectID)
+		case http.MethodDelete:
+			h.deleteProject(w, projectID)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		}
+		return
+	}
+
+	if len(parts) == 3 && parts[1] == "tasks" {
+		taskID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid task id")
+			return
+		}
+		if r.Method != http.MethodDelete {
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+			return
+		}
+		h.removeTaskFromProject(w, projectID, taskID)
+		return
+	}
+
+	if len(parts) == 2 && parts[1] == "tasks" {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+			return
+		}
+		h.addTaskToProject(w, r, projectID)
+		return
+	}
+
+	writeError(w, http.StatusNotFound, "not found")
+}
+
+func (h *ProjectHandler) updateProject(w http.ResponseWriter, r *http.Request, id int) {
+	project, err := decodeProject(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	updated, ok, err := h.store.UpdateProject(id, project)
+	if err != nil {
+		log.Printf("failed to update project: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "project was not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, updated)
+}
+
+func (h *ProjectHandler) deleteProject(w http.ResponseWriter, id int) {
+	project, ok, err := h.store.DeleteProject(id)
+	if err != nil {
+		log.Printf("failed to delete project: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"project": project,
+	})
+}
+
+func (h *ProjectHandler) addTaskToProject(w http.ResponseWriter, r *http.Request, projectID int) {
+	req, err := decodePayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Text))
+	if description == "" {
+		writeError(w, http.StatusBadRequest, "task description is required")
+		return
+	}
+
+	project, task, ok, err := h.store.AddTaskToProject(projectID, models.Task{
+		Text:        description,
+		Description: description,
+		Status:      storage.StatusActive,
+	})
+	if err != nil {
+		log.Printf("failed to add project task: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotFound, "project was not found")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"project": project,
+		"task":    task,
+	})
+}
+
+func (h *ProjectHandler) removeTaskFromProject(w http.ResponseWriter, projectID, taskID int) {
+	task, ok, err := h.store.RemoveTaskFromProject(projectID, taskID)
+	if err != nil {
+		log.Printf("failed to remove project task: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"task":    task,
+	})
+}
+
+func (h *DelayedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	prepareResponse(w)
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		return
+	}
+
+	req, err := decodePayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+	if req.DelayUntil == nil {
+		writeError(w, http.StatusBadRequest, "delayUntil must be a valid date")
+		return
+	}
+
+	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Text))
+	if description == "" {
+		writeError(w, http.StatusBadRequest, "task description is required")
+		return
+	}
+
+	task, err := h.store.AddProblem(description, description, strings.TrimSpace(req.SourceText), req.DelayUntil)
+	if err != nil {
+		log.Printf("failed to save delayed task: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (h *CurrentWaveHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	prepareResponse(w)
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	path := strings.TrimPrefix(r.URL.Path, "/api/current-wave")
+	if path == "" || path == "/" {
+		switch r.Method {
+		case http.MethodPost:
+			h.addTask(w, r)
+		case http.MethodGet:
+			h.getTasks(w, r)
+		default:
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+		}
+		return
+	}
+
+	id, err := idFromPath(path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid current wave task id")
+		return
+	}
+
+	switch r.Method {
+	case http.MethodDelete:
+		h.deleteTask(w, id)
+	case http.MethodPut, http.MethodPatch:
+		h.updateTask(w, r, id)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+	}
+}
+
+func (h *CurrentWaveHandler) addTask(w http.ResponseWriter, r *http.Request) {
+	req, err := decodePayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Text))
+	if description == "" {
+		writeError(w, http.StatusBadRequest, "task description is required")
+		return
+	}
+
+	task, err := h.store.AddToCurrentWave(models.Task{
+		Text:        description,
+		Description: description,
+		Source:      strings.TrimSpace(req.Source),
+		ProjectID:   req.ProjectID,
+		ProjectName: strings.TrimSpace(req.ProjectName),
+		Status:      storage.StatusActive,
+	})
+	if err != nil {
+		log.Printf("failed to add current wave task: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (h *CurrentWaveHandler) getTasks(w http.ResponseWriter, r *http.Request) {
+	tasks := h.store.GetCurrentWave()
+	writeJSON(w, http.StatusOK, models.CurrentWaveResponse{
+		Tasks: tasks,
+		Wave:  tasks,
+	})
+}
+
+func (h *CurrentWaveHandler) deleteTask(w http.ResponseWriter, id int) {
+	task, ok, err := h.store.DeleteCurrentWaveTask(id)
+	if err != nil {
+		log.Printf("failed to delete current wave task: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"deleted": true,
+		"task":    task,
+	})
+}
+
+func (h *CurrentWaveHandler) updateTask(w http.ResponseWriter, r *http.Request, id int) {
+	req, err := decodePayload(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	if req.Done || req.Status == storage.StatusDone {
+		task, ok, err := h.store.MarkCurrentWaveTaskDone(id)
+		if err != nil {
+			log.Printf("failed to mark current wave task as done: %v", err)
+			writeError(w, http.StatusInternalServerError, "server error")
+			return
+		}
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{
+				"deleted": false,
+			})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"deleted": true,
+			"done":    true,
+			"task":    task,
+		})
+		return
+	}
+
+	writeError(w, http.StatusBadRequest, "only done=true update is supported")
+}
+
+func (h *ModeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	prepareResponse(w)
+
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, models.ModeResponse{Mode: h.store.GetMode()})
+	case http.MethodPut:
+		h.setMode(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+	}
+}
+
+func (h *ModeHandler) setMode(w http.ResponseWriter, r *http.Request) {
+	var raw json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON")
+		return
+	}
+
+	mode, err := modeFromRaw(raw)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid mode")
+		return
+	}
+
+	mode, err = h.store.SetMode(mode)
+	if err != nil {
+		log.Printf("failed to save mode: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, models.ModeResponse{Mode: mode})
+}
+
 func decodePayload(r *http.Request) (normalizedPayload, error) {
 	var raw struct {
 		Text        json.RawMessage `json:"text"`
 		Name        string          `json:"name"`
 		Description string          `json:"description"`
 		SourceText  string          `json:"sourceText"`
+		Source      string          `json:"source"`
+		ProjectID   int             `json:"projectId"`
+		ProjectName string          `json:"projectName"`
 		Status      string          `json:"status"`
 		DelayUntil  string          `json:"delayUntil"`
+		Done        bool            `json:"done"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
@@ -370,7 +797,11 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 		Name:        raw.Name,
 		Description: raw.Description,
 		SourceText:  raw.SourceText,
+		Source:      raw.Source,
+		ProjectID:   raw.ProjectID,
+		ProjectName: raw.ProjectName,
 		Status:      raw.Status,
+		Done:        raw.Done,
 	}
 
 	if raw.DelayUntil != "" {
@@ -396,8 +827,12 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 		Name        string `json:"name"`
 		Description string `json:"description"`
 		SourceText  string `json:"sourceText"`
+		Source      string `json:"source"`
+		ProjectID   int    `json:"projectId"`
+		ProjectName string `json:"projectName"`
 		Status      string `json:"status"`
 		DelayUntil  string `json:"delayUntil"`
+		Done        bool   `json:"done"`
 	}
 	if err := json.Unmarshal(raw.Text, &nested); err != nil {
 		return normalizedPayload{}, fmt.Errorf("unsupported text payload: %w", err)
@@ -413,8 +848,20 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	if nested.SourceText != "" {
 		result.SourceText = nested.SourceText
 	}
+	if nested.Source != "" {
+		result.Source = nested.Source
+	}
+	if nested.ProjectID != 0 {
+		result.ProjectID = nested.ProjectID
+	}
+	if nested.ProjectName != "" {
+		result.ProjectName = nested.ProjectName
+	}
 	if nested.Status != "" {
 		result.Status = nested.Status
+	}
+	if nested.Done {
+		result.Done = true
 	}
 	if nested.DelayUntil != "" {
 		delayUntil, err := parseTime(nested.DelayUntil)
@@ -425,6 +872,60 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	}
 
 	return result, nil
+}
+
+func decodeProject(r *http.Request) (models.Project, error) {
+	var project models.Project
+	if err := json.NewDecoder(r.Body).Decode(&project); err != nil {
+		return models.Project{}, err
+	}
+	if project.Tasks == nil {
+		project.Tasks = make([]models.Task, 0)
+	}
+	for i := range project.Tasks {
+		if project.Tasks[i].Description == "" {
+			project.Tasks[i].Description = project.Tasks[i].Text
+		}
+		if project.Tasks[i].Text == "" {
+			project.Tasks[i].Text = project.Tasks[i].Description
+		}
+		if project.Tasks[i].Status == "" {
+			project.Tasks[i].Status = storage.StatusActive
+		}
+	}
+	return project, nil
+}
+
+func idFromPath(path string) (int, error) {
+	parts := strings.Split(strings.Trim(path, "/"), "/")
+	if len(parts) == 0 || parts[0] == "" {
+		return 0, fmt.Errorf("missing id")
+	}
+	return strconv.Atoi(parts[0])
+}
+
+func modeFromRaw(raw json.RawMessage) (string, error) {
+	var mode string
+	if err := json.Unmarshal(raw, &mode); err == nil {
+		return strings.TrimSpace(mode), nil
+	}
+
+	var payload struct {
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(payload.Mode), nil
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func parseTime(value string) (time.Time, error) {

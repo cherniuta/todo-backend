@@ -4,6 +4,7 @@ import (
 	"os"
 	"testing"
 	"time"
+	"todo-backend/models"
 )
 
 func newTestStorage(t *testing.T) *Storage {
@@ -145,5 +146,108 @@ func TestProjectsLifecycle(t *testing.T) {
 	}
 	if projects[0].ID != project.ID || projects[0].Name != "Demo" {
 		t.Fatalf("unexpected project: %#v", projects[0])
+	}
+}
+
+func TestProjectTasksAndDeletionLifecycle(t *testing.T) {
+	store := newTestStorage(t)
+
+	project, err := store.AddProject("Demo", "Prepare demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, task, ok, err := store.AddTaskToProject(project.ID, TaskForTest("project task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected task to be added to project")
+	}
+
+	projects := store.GetProjects()
+	if len(projects[0].Tasks) != 1 {
+		t.Fatalf("expected 1 project task, got %d", len(projects[0].Tasks))
+	}
+
+	removed, ok, err := store.RemoveTaskFromProject(project.ID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || removed.ID != task.ID {
+		t.Fatalf("expected removed task id %d, got %#v", task.ID, removed)
+	}
+
+	deletedProject, ok, err := store.DeleteProject(project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || deletedProject.ID != project.ID {
+		t.Fatalf("expected deleted project id %d, got %#v", project.ID, deletedProject)
+	}
+}
+
+func TestProblemsCanBeDeleted(t *testing.T) {
+	store := newTestStorage(t)
+
+	task, err := store.AddProblem("", "standalone problem", "", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.Description != "standalone problem" || task.Text != "standalone problem" {
+		t.Fatalf("unexpected problem: %#v", task)
+	}
+
+	deleted, ok, err := store.DeleteProblem(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || deleted.ID != task.ID {
+		t.Fatalf("expected deleted problem id %d, got %#v", task.ID, deleted)
+	}
+}
+
+func TestCurrentWaveLifecycle(t *testing.T) {
+	store := newTestStorage(t)
+
+	task, err := store.AddToCurrentWave(TaskForTest("wave task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tasks := store.GetCurrentWave()
+	if len(tasks) != 1 {
+		t.Fatalf("expected 1 current wave task, got %d", len(tasks))
+	}
+
+	doneTask, ok, err := store.MarkCurrentWaveTaskDone(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !doneTask.Done || doneTask.Status != StatusDone {
+		t.Fatalf("expected done task, got %#v", doneTask)
+	}
+	if len(store.GetCurrentWave()) != 0 {
+		t.Fatal("expected done task to be removed from current wave")
+	}
+}
+
+func TestModeLifecycle(t *testing.T) {
+	store := newTestStorage(t)
+
+	mode, err := store.SetMode("projects")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if mode != "projects" || store.GetMode() != "projects" {
+		t.Fatalf("expected projects mode, got %q", store.GetMode())
+	}
+}
+
+func TaskForTest(description string) models.Task {
+	return models.Task{
+		Text:        description,
+		Description: description,
+		Status:      StatusActive,
 	}
 }
