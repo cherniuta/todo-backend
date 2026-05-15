@@ -187,6 +187,36 @@ func TestProjectTasksAndDeletionLifecycle(t *testing.T) {
 	}
 }
 
+func TestProjectTaskCanBeMarkedDone(t *testing.T) {
+	store := newTestStorage(t)
+
+	project, err := store.AddProject("Demo", "Prepare demo", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, task, ok, err := store.AddTaskToProject(project.ID, TaskForTest("project task"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok {
+		t.Fatal("expected task to be added to project")
+	}
+
+	_, doneTask, ok, err := store.MarkProjectTaskDone(project.ID, task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || doneTask.Status != StatusDone || !doneTask.Done {
+		t.Fatalf("expected done project task, got %#v", doneTask)
+	}
+
+	projects := store.GetProjects()
+	if projects[0].Tasks[0].Status != StatusDone || !projects[0].Tasks[0].Done {
+		t.Fatalf("expected done task to be persisted, got %#v", projects[0].Tasks[0])
+	}
+}
+
 func TestProblemsCanBeDeleted(t *testing.T) {
 	store := newTestStorage(t)
 
@@ -210,9 +240,15 @@ func TestProblemsCanBeDeleted(t *testing.T) {
 func TestCurrentWaveLifecycle(t *testing.T) {
 	store := newTestStorage(t)
 
-	task, err := store.AddToCurrentWave(TaskForTest("wave task"))
+	task := TaskForTest("wave task")
+	task.ID = 42
+	task.ProblemID = 42
+	savedTask, err := store.AddToCurrentWave(task)
 	if err != nil {
 		t.Fatal(err)
+	}
+	if savedTask.ID != 42 || savedTask.ProblemID != 42 {
+		t.Fatalf("expected source problem id to be preserved, got %#v", savedTask)
 	}
 
 	tasks := store.GetCurrentWave()
@@ -220,7 +256,7 @@ func TestCurrentWaveLifecycle(t *testing.T) {
 		t.Fatalf("expected 1 current wave task, got %d", len(tasks))
 	}
 
-	doneTask, ok, err := store.MarkCurrentWaveTaskDone(task.ID)
+	doneTask, ok, err := store.MarkCurrentWaveTaskDone(task.ProblemID)
 	if err != nil {
 		t.Fatal(err)
 	}

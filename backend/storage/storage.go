@@ -549,21 +549,60 @@ func (s *Storage) RemoveTaskFromProject(projectID, taskID int) (models.Task, boo
 	return models.Task{}, false, nil
 }
 
+func (s *Storage) MarkProjectTaskDone(projectID, taskID int) (models.Project, models.Task, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	now := time.Now()
+	for projectIndex := range s.projects {
+		if s.projects[projectIndex].ID == projectID {
+			for taskIndex := range s.projects[projectIndex].Tasks {
+				if s.projects[projectIndex].Tasks[taskIndex].ID == taskID {
+					s.projects[projectIndex].Tasks[taskIndex].Status = StatusDone
+					s.projects[projectIndex].Tasks[taskIndex].Done = true
+					s.projects[projectIndex].Tasks[taskIndex].UpdatedAt = now
+					s.projects[projectIndex].UpdatedAt = now
+					if err := s.saveProjectsFile(); err != nil {
+						return models.Project{}, models.Task{}, false, err
+					}
+					return s.projects[projectIndex], s.projects[projectIndex].Tasks[taskIndex], true, nil
+				}
+			}
+			return models.Project{}, models.Task{}, false, nil
+		}
+	}
+
+	return models.Project{}, models.Task{}, false, nil
+}
+
 func (s *Storage) AddToCurrentWave(task models.Task) (models.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	task.ID = s.nextWaveID
-	s.nextWaveID++
+	if task.ID == 0 {
+		task.ID = s.nextWaveID
+		s.nextWaveID++
+	} else if task.ID >= s.nextWaveID {
+		s.nextWaveID = task.ID + 1
+	}
+	if task.ProblemID == 0 {
+		task.ProblemID = task.ID
+	}
 	if task.Description == "" {
 		task.Description = task.Text
 	}
 	if task.Text == "" {
 		task.Text = task.Description
 	}
+	if task.ProblemDescription == "" {
+		task.ProblemDescription = task.Description
+	}
 	if task.Status == "" {
 		task.Status = StatusActive
+	}
+	if task.SelectedAt == nil {
+		task.SelectedAt = &now
 	}
 	task.CreatedAt = now
 	task.UpdatedAt = now
@@ -590,7 +629,7 @@ func (s *Storage) DeleteCurrentWaveTask(id int) (models.Task, bool, error) {
 	defer s.mu.Unlock()
 
 	for i, task := range s.currentWave {
-		if task.ID == id {
+		if task.ID == id || task.ProblemID == id {
 			s.currentWave = append(s.currentWave[:i], s.currentWave[i+1:]...)
 			if err := s.saveWaveFile(); err != nil {
 				return models.Task{}, false, err
@@ -607,7 +646,7 @@ func (s *Storage) MarkCurrentWaveTaskDone(id int) (models.Task, bool, error) {
 	defer s.mu.Unlock()
 
 	for i, task := range s.currentWave {
-		if task.ID == id {
+		if task.ID == id || task.ProblemID == id {
 			task.Done = true
 			task.Status = StatusDone
 			task.UpdatedAt = time.Now()

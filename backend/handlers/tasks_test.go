@@ -209,15 +209,56 @@ func TestProjectUpdateAndRemoveTaskRoutes(t *testing.T) {
 	}
 }
 
+func TestProjectTaskDoneRouteMarksTaskDone(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewProjectHandler(store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/projects", bytes.NewReader([]byte(`{"name":"Demo","description":"Before"}`)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected project create status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/projects/1/tasks", bytes.NewReader([]byte(`{"description":"Project task"}`)))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected project task create status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/projects/1/tasks/1/done", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected project task done status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		Done bool `json:"done"`
+		Task struct {
+			Status string `json:"status"`
+			Done   bool   `json:"done"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if !response.Done || response.Task.Status != storage.StatusDone || !response.Task.Done {
+		t.Fatalf("unexpected done response: %#v", response)
+	}
+}
+
 func TestCurrentWaveAddAndDoneRoutes(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewCurrentWaveHandler(store)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/current-wave", bytes.NewReader([]byte(`{
-		"description":"Do selected task",
-		"source":"project",
+		"problemId":77,
+		"problemDescription":"Do selected task",
 		"projectId":1,
-		"projectName":"Demo"
+		"projectName":"Demo",
+		"selectedAt":"2026-05-15T10:00:00Z"
 	}`)))
 	rec := httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
@@ -232,21 +273,38 @@ func TestCurrentWaveAddAndDoneRoutes(t *testing.T) {
 		t.Fatalf("expected wave get status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
 	}
 
-	var listResponse struct {
-		Tasks []struct {
-			ID          int    `json:"id"`
-			Description string `json:"description"`
-			ProjectName string `json:"projectName"`
-		} `json:"tasks"`
+	var listResponse []struct {
+		ID                 int    `json:"id"`
+		ProblemID          int    `json:"problemId"`
+		Description        string `json:"description"`
+		ProblemDescription string `json:"problemDescription"`
+		ProjectName        string `json:"projectName"`
 	}
 	if err := json.NewDecoder(rec.Body).Decode(&listResponse); err != nil {
 		t.Fatal(err)
 	}
-	if len(listResponse.Tasks) != 1 || listResponse.Tasks[0].ProjectName != "Demo" {
+	if len(listResponse) != 1 || listResponse[0].ID != 77 || listResponse[0].ProblemID != 77 || listResponse[0].ProblemDescription != "Do selected task" || listResponse[0].ProjectName != "Demo" {
 		t.Fatalf("unexpected current wave response: %#v", listResponse)
 	}
 
-	req = httptest.NewRequest(http.MethodPut, "/api/current-wave/1", bytes.NewReader([]byte(`{"done":true}`)))
+	req = httptest.NewRequest(http.MethodDelete, "/api/current-wave/77", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected wave delete status %d, got %d: %s", http.StatusOK, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/current-wave", bytes.NewReader([]byte(`{
+		"problemId":78,
+		"problemDescription":"Do another selected task"
+	}`)))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected second wave create status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/current-wave/78", bytes.NewReader([]byte(`{"done":true}`)))
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

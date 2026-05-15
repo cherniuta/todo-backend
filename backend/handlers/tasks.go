@@ -37,16 +37,19 @@ type ModeHandler struct {
 }
 
 type normalizedPayload struct {
-	Text        string
-	Name        string
-	Description string
-	SourceText  string
-	Source      string
-	ProjectID   int
-	ProjectName string
-	Status      string
-	DelayUntil  *time.Time
-	Done        bool
+	Text               string
+	Name               string
+	Description        string
+	ProblemID          int
+	ProblemDescription string
+	SourceText         string
+	Source             string
+	ProjectID          int
+	ProjectName        string
+	Status             string
+	DelayUntil         *time.Time
+	SelectedAt         *time.Time
+	Done               bool
 }
 
 func NewTaskHandler(store *storage.Storage) *TaskHandler {
@@ -449,6 +452,20 @@ func (h *ProjectHandler) handleProjectItem(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	if len(parts) == 4 && parts[1] == "tasks" && parts[3] == "done" {
+		taskID, err := strconv.Atoi(parts[2])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid task id")
+			return
+		}
+		if r.Method != http.MethodPut {
+			writeError(w, http.StatusMethodNotAllowed, "method is not supported")
+			return
+		}
+		h.markTaskInProjectDone(w, projectID, taskID)
+		return
+	}
+
 	if len(parts) == 3 && parts[1] == "tasks" {
 		taskID, err := strconv.Atoi(parts[2])
 		if err != nil {
@@ -570,6 +587,27 @@ func (h *ProjectHandler) removeTaskFromProject(w http.ResponseWriter, projectID,
 	})
 }
 
+func (h *ProjectHandler) markTaskInProjectDone(w http.ResponseWriter, projectID, taskID int) {
+	project, task, ok, err := h.store.MarkProjectTaskDone(projectID, taskID)
+	if err != nil {
+		log.Printf("failed to mark project task as done: %v", err)
+		writeError(w, http.StatusInternalServerError, "server error")
+		return
+	}
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{
+			"done": false,
+		})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"done":    true,
+		"project": project,
+		"task":    task,
+	})
+}
+
 func (h *DelayedHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	prepareResponse(w)
 
@@ -652,19 +690,23 @@ func (h *CurrentWaveHandler) addTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	description := strings.TrimSpace(firstNonEmpty(req.Description, req.Text))
+	description := strings.TrimSpace(firstNonEmpty(req.ProblemDescription, req.Description, req.Text))
 	if description == "" {
 		writeError(w, http.StatusBadRequest, "task description is required")
 		return
 	}
 
 	task, err := h.store.AddToCurrentWave(models.Task{
-		Text:        description,
-		Description: description,
-		Source:      strings.TrimSpace(req.Source),
-		ProjectID:   req.ProjectID,
-		ProjectName: strings.TrimSpace(req.ProjectName),
-		Status:      storage.StatusActive,
+		ID:                 req.ProblemID,
+		Text:               description,
+		Description:        description,
+		ProblemID:          req.ProblemID,
+		ProblemDescription: description,
+		Source:             strings.TrimSpace(req.Source),
+		ProjectID:          req.ProjectID,
+		ProjectName:        strings.TrimSpace(req.ProjectName),
+		Status:             storage.StatusActive,
+		SelectedAt:         req.SelectedAt,
 	})
 	if err != nil {
 		log.Printf("failed to add current wave task: %v", err)
@@ -677,10 +719,7 @@ func (h *CurrentWaveHandler) addTask(w http.ResponseWriter, r *http.Request) {
 
 func (h *CurrentWaveHandler) getTasks(w http.ResponseWriter, r *http.Request) {
 	tasks := h.store.GetCurrentWave()
-	writeJSON(w, http.StatusOK, models.CurrentWaveResponse{
-		Tasks: tasks,
-		Wave:  tasks,
-	})
+	writeJSON(w, http.StatusOK, tasks)
 }
 
 func (h *CurrentWaveHandler) deleteTask(w http.ResponseWriter, id int) {
@@ -777,16 +816,19 @@ func (h *ModeHandler) setMode(w http.ResponseWriter, r *http.Request) {
 
 func decodePayload(r *http.Request) (normalizedPayload, error) {
 	var raw struct {
-		Text        json.RawMessage `json:"text"`
-		Name        string          `json:"name"`
-		Description string          `json:"description"`
-		SourceText  string          `json:"sourceText"`
-		Source      string          `json:"source"`
-		ProjectID   int             `json:"projectId"`
-		ProjectName string          `json:"projectName"`
-		Status      string          `json:"status"`
-		DelayUntil  string          `json:"delayUntil"`
-		Done        bool            `json:"done"`
+		Text               json.RawMessage `json:"text"`
+		Name               string          `json:"name"`
+		Description        string          `json:"description"`
+		ProblemID          int             `json:"problemId"`
+		ProblemDescription string          `json:"problemDescription"`
+		SourceText         string          `json:"sourceText"`
+		Source             string          `json:"source"`
+		ProjectID          int             `json:"projectId"`
+		ProjectName        string          `json:"projectName"`
+		Status             string          `json:"status"`
+		DelayUntil         string          `json:"delayUntil"`
+		SelectedAt         string          `json:"selectedAt"`
+		Done               bool            `json:"done"`
 	}
 
 	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
@@ -794,14 +836,16 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	}
 
 	result := normalizedPayload{
-		Name:        raw.Name,
-		Description: raw.Description,
-		SourceText:  raw.SourceText,
-		Source:      raw.Source,
-		ProjectID:   raw.ProjectID,
-		ProjectName: raw.ProjectName,
-		Status:      raw.Status,
-		Done:        raw.Done,
+		Name:               raw.Name,
+		Description:        raw.Description,
+		ProblemID:          raw.ProblemID,
+		ProblemDescription: raw.ProblemDescription,
+		SourceText:         raw.SourceText,
+		Source:             raw.Source,
+		ProjectID:          raw.ProjectID,
+		ProjectName:        raw.ProjectName,
+		Status:             raw.Status,
+		Done:               raw.Done,
 	}
 
 	if raw.DelayUntil != "" {
@@ -810,6 +854,13 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 			return normalizedPayload{}, err
 		}
 		result.DelayUntil = &delayUntil
+	}
+	if raw.SelectedAt != "" {
+		selectedAt, err := parseTime(raw.SelectedAt)
+		if err != nil {
+			return normalizedPayload{}, err
+		}
+		result.SelectedAt = &selectedAt
 	}
 
 	if len(raw.Text) == 0 || string(raw.Text) == "null" {
@@ -823,16 +874,19 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	}
 
 	var nested struct {
-		Text        string `json:"text"`
-		Name        string `json:"name"`
-		Description string `json:"description"`
-		SourceText  string `json:"sourceText"`
-		Source      string `json:"source"`
-		ProjectID   int    `json:"projectId"`
-		ProjectName string `json:"projectName"`
-		Status      string `json:"status"`
-		DelayUntil  string `json:"delayUntil"`
-		Done        bool   `json:"done"`
+		Text               string `json:"text"`
+		Name               string `json:"name"`
+		Description        string `json:"description"`
+		ProblemID          int    `json:"problemId"`
+		ProblemDescription string `json:"problemDescription"`
+		SourceText         string `json:"sourceText"`
+		Source             string `json:"source"`
+		ProjectID          int    `json:"projectId"`
+		ProjectName        string `json:"projectName"`
+		Status             string `json:"status"`
+		DelayUntil         string `json:"delayUntil"`
+		SelectedAt         string `json:"selectedAt"`
+		Done               bool   `json:"done"`
 	}
 	if err := json.Unmarshal(raw.Text, &nested); err != nil {
 		return normalizedPayload{}, fmt.Errorf("unsupported text payload: %w", err)
@@ -844,6 +898,12 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	}
 	if nested.Description != "" {
 		result.Description = nested.Description
+	}
+	if nested.ProblemID != 0 {
+		result.ProblemID = nested.ProblemID
+	}
+	if nested.ProblemDescription != "" {
+		result.ProblemDescription = nested.ProblemDescription
 	}
 	if nested.SourceText != "" {
 		result.SourceText = nested.SourceText
@@ -869,6 +929,13 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 			return normalizedPayload{}, err
 		}
 		result.DelayUntil = &delayUntil
+	}
+	if nested.SelectedAt != "" {
+		selectedAt, err := parseTime(nested.SelectedAt)
+		if err != nil {
+			return normalizedPayload{}, err
+		}
+		result.SelectedAt = &selectedAt
 	}
 
 	return result, nil
@@ -942,7 +1009,7 @@ func parseTime(value string) (time.Time, error) {
 
 func prepareResponse(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
 	w.Header().Set("Content-Type", "application/json")
 }

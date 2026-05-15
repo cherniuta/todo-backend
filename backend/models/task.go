@@ -3,18 +3,21 @@ package models
 import "time"
 
 type Task struct {
-	ID          int        `json:"id"`
-	Text        string     `json:"text,omitempty"`
-	Description string     `json:"description,omitempty"`
-	SourceText  string     `json:"sourceText,omitempty"`
-	Source      string     `json:"source,omitempty"`
-	ProjectID   int        `json:"projectId,omitempty"`
-	ProjectName string     `json:"projectName,omitempty"`
-	Status      string     `json:"status"`
-	DelayUntil  *time.Time `json:"delayUntil,omitempty"`
-	Done        bool       `json:"done,omitempty"`
-	CreatedAt   time.Time  `json:"createdAt"`
-	UpdatedAt   time.Time  `json:"updatedAt,omitempty"`
+	ID                 int        `json:"id"`
+	Text               string     `json:"text,omitempty"`
+	Description        string     `json:"description,omitempty"`
+	ProblemID          int        `json:"problemId,omitempty"`
+	ProblemDescription string     `json:"problemDescription,omitempty"`
+	SourceText         string     `json:"sourceText,omitempty"`
+	Source             string     `json:"source,omitempty"`
+	ProjectID          int        `json:"projectId,omitempty"`
+	ProjectName        string     `json:"projectName,omitempty"`
+	Status             string     `json:"status"`
+	DelayUntil         *time.Time `json:"delayUntil,omitempty"`
+	SelectedAt         *time.Time `json:"selectedAt,omitempty"`
+	Done               bool       `json:"done,omitempty"`
+	CreatedAt          time.Time  `json:"createdAt"`
+	UpdatedAt          time.Time  `json:"updatedAt,omitempty"`
 }
 
 type Project struct {
