@@ -316,6 +316,36 @@ func TestCurrentWaveAddAndDoneRoutes(t *testing.T) {
 	}
 }
 
+func TestCurrentWaveAcceptsStringIDs(t *testing.T) {
+	store := newTestStore(t)
+	handler := NewCurrentWaveHandler(store)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/current-wave", bytes.NewReader([]byte(`{
+		"projectId":"1",
+		"projectName":"Demo",
+		"problemId":"79",
+		"problemDescription":"Do selected task",
+		"selectedAt":"2026-05-15T10:00:00.000Z"
+	}`)))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected wave create status %d, got %d: %s", http.StatusCreated, rec.Code, rec.Body.String())
+	}
+
+	var response struct {
+		ID        int `json:"id"`
+		ProblemID int `json:"problemId"`
+		ProjectID int `json:"projectId"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ID != 79 || response.ProblemID != 79 || response.ProjectID != 1 {
+		t.Fatalf("unexpected current wave response: %#v", response)
+	}
+}
+
 func TestModeAcceptsFrontendStringPayload(t *testing.T) {
 	store := newTestStore(t)
 	handler := NewModeHandler(store)

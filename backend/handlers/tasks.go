@@ -819,11 +819,11 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 		Text               json.RawMessage `json:"text"`
 		Name               string          `json:"name"`
 		Description        string          `json:"description"`
-		ProblemID          int             `json:"problemId"`
+		ProblemID          json.RawMessage `json:"problemId"`
 		ProblemDescription string          `json:"problemDescription"`
 		SourceText         string          `json:"sourceText"`
 		Source             string          `json:"source"`
-		ProjectID          int             `json:"projectId"`
+		ProjectID          json.RawMessage `json:"projectId"`
 		ProjectName        string          `json:"projectName"`
 		Status             string          `json:"status"`
 		DelayUntil         string          `json:"delayUntil"`
@@ -835,14 +835,23 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 		return normalizedPayload{}, err
 	}
 
+	problemID, err := intFromRaw(raw.ProblemID)
+	if err != nil {
+		return normalizedPayload{}, err
+	}
+	projectID, err := intFromRaw(raw.ProjectID)
+	if err != nil {
+		return normalizedPayload{}, err
+	}
+
 	result := normalizedPayload{
 		Name:               raw.Name,
 		Description:        raw.Description,
-		ProblemID:          raw.ProblemID,
+		ProblemID:          problemID,
 		ProblemDescription: raw.ProblemDescription,
 		SourceText:         raw.SourceText,
 		Source:             raw.Source,
-		ProjectID:          raw.ProjectID,
+		ProjectID:          projectID,
 		ProjectName:        raw.ProjectName,
 		Status:             raw.Status,
 		Done:               raw.Done,
@@ -877,11 +886,11 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 		Text               string `json:"text"`
 		Name               string `json:"name"`
 		Description        string `json:"description"`
-		ProblemID          int    `json:"problemId"`
+		ProblemID          any    `json:"problemId"`
 		ProblemDescription string `json:"problemDescription"`
 		SourceText         string `json:"sourceText"`
 		Source             string `json:"source"`
-		ProjectID          int    `json:"projectId"`
+		ProjectID          any    `json:"projectId"`
 		ProjectName        string `json:"projectName"`
 		Status             string `json:"status"`
 		DelayUntil         string `json:"delayUntil"`
@@ -899,8 +908,14 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	if nested.Description != "" {
 		result.Description = nested.Description
 	}
-	if nested.ProblemID != 0 {
-		result.ProblemID = nested.ProblemID
+	if nested.ProblemID != nil {
+		problemID, err := intFromAny(nested.ProblemID)
+		if err != nil {
+			return normalizedPayload{}, err
+		}
+		if problemID != 0 {
+			result.ProblemID = problemID
+		}
 	}
 	if nested.ProblemDescription != "" {
 		result.ProblemDescription = nested.ProblemDescription
@@ -911,8 +926,14 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	if nested.Source != "" {
 		result.Source = nested.Source
 	}
-	if nested.ProjectID != 0 {
-		result.ProjectID = nested.ProjectID
+	if nested.ProjectID != nil {
+		projectID, err := intFromAny(nested.ProjectID)
+		if err != nil {
+			return normalizedPayload{}, err
+		}
+		if projectID != 0 {
+			result.ProjectID = projectID
+		}
 	}
 	if nested.ProjectName != "" {
 		result.ProjectName = nested.ProjectName
@@ -939,6 +960,44 @@ func decodePayload(r *http.Request) (normalizedPayload, error) {
 	}
 
 	return result, nil
+}
+
+func intFromRaw(raw json.RawMessage) (int, error) {
+	if len(raw) == 0 || string(raw) == "null" {
+		return 0, nil
+	}
+
+	var number int
+	if err := json.Unmarshal(raw, &number); err == nil {
+		return number, nil
+	}
+
+	var text string
+	if err := json.Unmarshal(raw, &text); err != nil {
+		return 0, err
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0, nil
+	}
+	return strconv.Atoi(text)
+}
+
+func intFromAny(value any) (int, error) {
+	switch typed := value.(type) {
+	case nil:
+		return 0, nil
+	case float64:
+		return int(typed), nil
+	case string:
+		typed = strings.TrimSpace(typed)
+		if typed == "" {
+			return 0, nil
+		}
+		return strconv.Atoi(typed)
+	default:
+		return 0, fmt.Errorf("unsupported id value %v", value)
+	}
 }
 
 func decodeProject(r *http.Request) (models.Project, error) {
